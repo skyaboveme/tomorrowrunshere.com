@@ -15,7 +15,8 @@
     --hair:rgba(234,242,255,.18);
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html{scroll-behavior:auto}
+  html{scroll-behavior:auto;overflow:hidden}
+  body{overflow:hidden;height:100vh}
   body{
     background:#0B1026;
     color:var(--ink);
@@ -79,12 +80,20 @@
   nav.rail a.active{color:var(--ink)}
 
   /* ---------- sections ---------- */
-  main{position:relative;z-index:2}
+  main{
+    position:relative;z-index:2;
+    height:100vh;overflow-y:auto;
+    scroll-snap-type:y mandatory;
+    -webkit-overflow-scrolling:touch;
+  }
   section.chapter{
     min-height:100vh;
+    height:100vh;
     display:flex;align-items:center;
     padding:14vh 7vw;
     position:relative;
+    scroll-snap-align:start;
+    scroll-snap-stop:always;
   }
   section.chapter.alt .inner{margin-left:auto}
   .inner{max-width:620px;position:relative}
@@ -171,7 +180,7 @@
     font-size:clamp(18rem,46vw,38rem);opacity:.85;
   }
 
-  #epilogue{min-height:108vh}
+  #epilogue{min-height:100vh;height:100vh}
   .cta{
     margin-top:3.2rem;display:inline-flex;align-items:center;gap:1rem;
     font-family:'IBM Plex Mono',monospace;font-size:.78rem;letter-spacing:.26em;
@@ -205,6 +214,9 @@
     .numeral{left:-4vw;font-size:42vw;opacity:.7}
     section.chapter.alt .numeral{right:-4vw}
     .stats{gap:1.6rem}
+  }
+  footer{
+    scroll-snap-align:end;
   }
   @media (prefers-reduced-motion:reduce){
     .scrollcue .line::after{animation:none}
@@ -396,51 +408,127 @@ gsap.registerPlugin(ScrollTrigger);
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* =========================================================
-   1. SMOOTH SCROLL (mini-Lenis)
-   ---------------------------------------------------------
-   Production swap: remove this block, then
-     import Lenis from 'lenis'
-     const lenis = new Lenis({ lerp: 0.09 });
-     lenis.on('scroll', ScrollTrigger.update);
-     gsap.ticker.add(t => lenis.raf(t * 1000));
-   Everything else stays identical.
+   1. SNAP SCROLL — one scroll = one section
 ========================================================= */
-const Smooth = (() => {
-  if (reduceMotion) return { current: () => window.scrollY };
-  let target = window.scrollY, current = window.scrollY, ticking = false;
-  const max = () => document.documentElement.scrollHeight - window.innerHeight;
-  const onWheel = e => {
-    if (e.ctrlKey) return;               // keep pinch-zoom native
-    e.preventDefault();
-    target = Math.max(0, Math.min(max(), target + e.deltaY));
-  };
-  window.addEventListener('wheel', onWheel, { passive: false });
-  // keep in sync with keyboard / anchor / touch scrolling
-  window.addEventListener('scroll', () => {
-    if (!ticking) { target = current = window.scrollY; }
-  }, { passive: true });
-  gsap.ticker.add(() => {
-    const next = current + (target - current) * 0.09;
-    if (Math.abs(next - current) > 0.05) {
-      current = next;
-      ticking = true;
-      window.scrollTo(0, current);
-      ticking = false;
+const mainEl = document.querySelector('main');
+const chapters = [...document.querySelectorAll('section.chapter')];
+let currentIdx = 0;
+let isSnapping = false;
+
+function snapTo(idx) {
+  if (idx < 0 || idx >= chapters.length || isSnapping) return;
+  isSnapping = true;
+  currentIdx = idx;
+  gsap.to(mainEl, {
+    scrollTo: { y: chapters[idx], offsetY: 0 },
+    duration: 0.9,
+    ease: 'power3.inOut',
+    onComplete: () => {
+      isSnapping = false;
+      ScrollTrigger.refresh();
+    }
+  });
+}
+
+// Load GSAP ScrollTo plugin inline
+gsap.registerPlugin({
+  name: 'scrollTo',
+  init(target, value) {
+    const el = typeof value.y === 'string' ? document.querySelector(value.y) : value.y;
+    const container = target;
+    const start = container.scrollTop;
+    const end = el instanceof Element
+      ? el.offsetTop - (value.offsetY || 0)
+      : value.y;
+    this.start = start;
+    this.change = end - start;
+    this.container = container;
+  },
+  render(progress) {
+    this.container.scrollTop = this.start + this.change * progress;
+  }
+});
+
+// Alternative: use native scrollIntoView with GSAP timing
+function snapToSection(idx) {
+  if (idx < 0 || idx >= chapters.length || isSnapping) return;
+  isSnapping = true;
+  currentIdx = idx;
+  const targetTop = chapters[idx].offsetTop;
+  const startTop = mainEl.scrollTop;
+  const obj = { t: 0 };
+  gsap.to(obj, {
+    t: 1,
+    duration: 0.85,
+    ease: 'power3.inOut',
+    onUpdate: () => {
+      mainEl.scrollTop = startTop + (targetTop - startTop) * obj.t;
+    },
+    onComplete: () => {
+      isSnapping = false;
       ScrollTrigger.update();
     }
   });
-  gsap.ticker.lagSmoothing(0);
-  // smooth anchor jumps
-  document.querySelectorAll('a[href^="#"]').forEach(a => {
-    a.addEventListener('click', e => {
-      const el = document.querySelector(a.getAttribute('href'));
-      if (!el) return;
-      e.preventDefault();
-      target = el.getBoundingClientRect().top + window.scrollY;
-    });
+}
+
+// Wheel handler: one scroll = next/prev section
+mainEl.addEventListener('wheel', e => {
+  if (e.ctrlKey) return; // keep pinch-zoom native
+  e.preventDefault();
+  if (isSnapping) return;
+  if (e.deltaY > 15) {
+    snapToSection(currentIdx + 1);
+  } else if (e.deltaY < -15) {
+    snapToSection(currentIdx - 1);
+  }
+}, { passive: false });
+
+// Touch support for mobile
+let touchStartY = 0;
+mainEl.addEventListener('touchstart', e => {
+  touchStartY = e.touches[0].clientY;
+}, { passive: true });
+mainEl.addEventListener('touchend', e => {
+  if (isSnapping) return;
+  const diff = touchStartY - e.changedTouches[0].clientY;
+  if (Math.abs(diff) > 50) {
+    snapToSection(diff > 0 ? currentIdx + 1 : currentIdx - 1);
+  }
+}, { passive: true });
+
+// Keyboard support
+window.addEventListener('keydown', e => {
+  if (isSnapping) return;
+  if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+    e.preventDefault();
+    snapToSection(currentIdx + 1);
+  } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+    e.preventDefault();
+    snapToSection(currentIdx - 1);
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    snapToSection(0);
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    snapToSection(chapters.length - 1);
+  }
+});
+
+// Anchor clicks
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const target = document.querySelector(a.getAttribute('href'));
+    if (!target) return;
+    e.preventDefault();
+    const idx = chapters.indexOf(target);
+    if (idx !== -1) snapToSection(idx);
   });
-  return { current: () => current };
-})();
+});
+
+// Expose current scroll position for shader
+const Smooth = {
+  current: () => mainEl.scrollTop
+};
 
 /* =========================================================
    2. THREE.JS — cursor-reactive painted background
@@ -608,8 +696,8 @@ gsap.ticker.add(() => {
   mouse.force *= 0.94;
   uniforms.uMouse.value.set(mouse.x, mouse.y);
   uniforms.uForce.value = mouse.force;
-  const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-  uniforms.uScroll.value += ((Smooth.current() / maxScroll) - uniforms.uScroll.value) * 0.06;
+  const maxScroll = mainEl.scrollHeight - mainEl.clientHeight;
+  uniforms.uScroll.value += ((Smooth.current() / (maxScroll || 1)) - uniforms.uScroll.value) * 0.06;
   uniforms.uC1.value.lerp(targetPalette[0], 0.045);
   uniforms.uC2.value.lerp(targetPalette[1], 0.045);
   uniforms.uC3.value.lerp(targetPalette[2], 0.045);
@@ -640,10 +728,10 @@ document.querySelectorAll('.split').forEach(h => {
   wrap(h);
 });
 
-/* progress bar */
+/* progress bar — tied to main scroller */
 gsap.to('#progress', {
   scaleX: 1, ease: 'none',
-  scrollTrigger: { start: 0, end: 'max', scrub: 0.3 }
+  scrollTrigger: { scroller: mainEl, start: 0, end: 'max', scrub: 0.3 }
 });
 
 /* per-chapter scenes */
@@ -658,16 +746,16 @@ document.querySelectorAll('section.chapter').forEach(sec => {
 
   /* color world handoff */
   ScrollTrigger.create({
-    trigger: sec, start: 'top 55%', end: 'bottom 55%',
-    onEnter: () => setChapter(idx),
-    onEnterBack: () => setChapter(idx),
+    trigger: sec, scroller: mainEl, start: 'top 55%', end: 'bottom 55%',
+    onEnter: () => { setChapter(idx); currentIdx = idx; },
+    onEnterBack: () => { setChapter(idx); currentIdx = idx; },
   });
 
   if (reduceMotion) return;
 
   /* entrance timeline */
   const tl = gsap.timeline({
-    scrollTrigger: { trigger: sec, start: 'top 68%', toggleActions: 'play none none reverse' }
+    scrollTrigger: { trigger: sec, scroller: mainEl, start: 'top 68%', toggleActions: 'play none none reverse' }
   });
   if (eyebrow) tl.from(eyebrow, { y: 18, autoAlpha: 0, duration: .7, ease: 'power3.out' });
   tl.to(words, { y: 0, duration: 1.0, ease: 'power4.out', stagger: 0.035 }, '-=.35');
@@ -679,7 +767,7 @@ document.querySelectorAll('section.chapter').forEach(sec => {
   if (numeral) {
     gsap.fromTo(numeral, { yPercent: 18 }, {
       yPercent: -22, ease: 'none',
-      scrollTrigger: { trigger: sec, start: 'top bottom', end: 'bottom top', scrub: true }
+      scrollTrigger: { trigger: sec, scroller: mainEl, start: 'top bottom', end: 'bottom top', scrub: true }
     });
   }
 
@@ -687,7 +775,7 @@ document.querySelectorAll('section.chapter').forEach(sec => {
   const inner = sec.querySelector('.inner');
   gsap.fromTo(inner, { y: 50 }, {
     y: -50, ease: 'none',
-    scrollTrigger: { trigger: sec, start: 'top bottom', end: 'bottom top', scrub: true }
+    scrollTrigger: { trigger: sec, scroller: mainEl, start: 'top bottom', end: 'bottom top', scrub: true }
   });
 
   /* stat count-ups */
@@ -696,7 +784,7 @@ document.querySelectorAll('section.chapter').forEach(sec => {
     const decimals = (String(el.dataset.count).split('.')[1] || '').length;
     const obj = { v: 0 };
     ScrollTrigger.create({
-      trigger: el, start: 'top 85%', once: true,
+      trigger: el, scroller: mainEl, start: 'top 85%', once: true,
       onEnter: () => gsap.to(obj, {
         v: end, duration: 1.8, ease: 'power2.out',
         onUpdate: () => {
